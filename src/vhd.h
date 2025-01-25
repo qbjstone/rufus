@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Virtual Disk Handling definitions and prototypes
- * Copyright © 2022 Pete Batard <pete@akeo.ie>
+ * Copyright © 2022-2024 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -19,6 +19,12 @@
 
 #include <stdint.h>
 #include <windows.h>
+// Temporary workaround for MinGW32 delay-loading
+// See https://github.com/pbatard/rufus/pull/2513
+#if defined(__MINGW32__)
+#undef DECLSPEC_IMPORT
+#define DECLSPEC_IMPORT __attribute__((visibility("hidden")))
+#endif
 #include <virtdisk.h>
 
 #pragma once
@@ -54,10 +60,6 @@
 
 #define MBR_SIZE							512	// Might need to review this once we see bootable 4k systems
 
-// TODO: Remove this once MinGW has been updated
-#ifndef VIRTUAL_STORAGE_TYPE_DEVICE_VHDX
-#define VIRTUAL_STORAGE_TYPE_DEVICE_VHDX                    3
-#endif
 #define VIRTUAL_STORAGE_TYPE_DEVICE_FFU                    99
 #define CREATE_VIRTUAL_DISK_VERSION_2                       2
 #define CREATE_VIRTUAL_DISK_FLAG_CREATE_BACKING_STORAGE     8
@@ -135,7 +137,8 @@ extern BOOL WimUnmountImage(const char* image, int index, BOOL commit);
 extern char* WimGetExistingMountPoint(const char* image, int index);
 extern BOOL WimIsValidIndex(const char* image, int index);
 extern int8_t IsBootableImage(const char* path);
-extern char* VhdMountImage(const char* path);
+extern char* VhdMountImageAndGetSize(const char* path, uint64_t* disksize);
+#define VhdMountImage(path) VhdMountImageAndGetSize(path, NULL)
 extern void VhdUnmountImage(void);
 extern void VhdSaveImage(void);
 extern void IsoSaveImage(void);

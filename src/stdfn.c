@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard Windows function calls
- * Copyright © 2013-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2013-2024 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +25,8 @@
 #include <sddl.h>
 #include <gpedit.h>
 #include <assert.h>
+#include <accctrl.h>
+#include <aclapi.h>
 
 #include "re.h"
 #include "rufus.h"
@@ -80,8 +82,8 @@ BOOL htab_create(uint32_t nel, htab_table* htab)
 	if (htab == NULL) {
 		return FALSE;
 	}
-	if (htab->table != NULL) {
-		uprintf("warning: htab_create() was called with a non empty table");
+	if_not_assert(htab->table == NULL) {
+		uprintf("Warning: htab_create() was called with a non empty table");
 		return FALSE;
 	}
 
@@ -96,7 +98,7 @@ BOOL htab_create(uint32_t nel, htab_table* htab)
 	// allocate memory and zero out.
 	htab->table = (htab_entry*)calloc(htab->size + 1, sizeof(htab_entry));
 	if (htab->table == NULL) {
-		uprintf("could not allocate space for hash table\n");
+		uprintf("Could not allocate space for hash table");
 		return FALSE;
 	}
 
@@ -166,7 +168,7 @@ uint32_t htab_hash(char* str, htab_table* htab)
 			// existing hash
 			return idx;
 		}
-		// uprintf("hash collision ('%s' vs '%s')\n", str, htab->table[idx].str);
+		// uprintf("Hash collision ('%s' vs '%s')", str, htab->table[idx].str);
 
 		// Second hash function, as suggested in [Knuth]
 		hval2 = 1 + hval % (htab->size - 2);
@@ -196,19 +198,19 @@ uint32_t htab_hash(char* str, htab_table* htab)
 	// Not found => New entry
 
 	// If the table is full return an error
-	if (htab->filled >= htab->size) {
-		uprintf("hash table is full (%d entries)", htab->size);
+	if_not_assert(htab->filled < htab->size) {
+		uprintf("Hash table is full (%d entries)", htab->size);
 		return 0;
 	}
 
 	safe_free(htab->table[idx].str);
 	htab->table[idx].used = hval;
-	htab->table[idx].str = (char*) malloc(safe_strlen(str)+1);
+	htab->table[idx].str = (char*) malloc(safe_strlen(str) + 1);
 	if (htab->table[idx].str == NULL) {
-		uprintf("could not duplicate string for hash table\n");
+		uprintf("Could not duplicate string for hash table");
 		return 0;
 	}
-	memcpy(htab->table[idx].str, str, safe_strlen(str)+1);
+	memcpy(htab->table[idx].str, str, safe_strlen(str) + 1);
 	++htab->filled;
 
 	return idx;
@@ -302,10 +304,18 @@ static const char* GetEdition(DWORD ProductType)
 	case 0x000000A5: return "Pro for Education N";
 	case 0x000000AB: return "Enterprise G";	// I swear Microsoft are just making up editions...
 	case 0x000000AC: return "Enterprise G N";
+	case 0x000000B2: return "Cloud";
+	case 0x000000B3: return "Cloud N";
 	case 0x000000B6: return "Home OS";
-	case 0x000000B7: return "Cloud E";
-	case 0x000000B8: return "Cloud E N";
+	case 0x000000B7: case 0x000000CB: return "Cloud E";
+	case 0x000000B9: return "IoT OS";
+	case 0x000000BA: case 0x000000CA: return "Cloud E N";
+	case 0x000000BB: return "IoT Edge OS";
+	case 0x000000BC: return "IoT Enterprise";
 	case 0x000000BD: return "Lite";
+	case 0x000000BF: return "IoT Enterprise S";
+	case 0x000000C0: case 0x000000C2: case 0x000000C3: case 0x000000C4: case 0x000000C5: case 0x000000C6: return "XBox";
+	case 0x000000C7: case 0x000000C8: case 0x00000196: case 0x00000197: case 0x00000198: return "Azure Server";
 	case 0xABCDABCD: return "(Unlicensed)";
 	default:
 		static_sprintf(unknown_edition_str, "(Unknown Edition 0x%02X)", (uint32_t)ProductType);
@@ -534,7 +544,7 @@ void StrArrayCreate(StrArray* arr, uint32_t initial_size)
 	arr->Max = initial_size; arr->Index = 0;
 	arr->String = (char**)calloc(arr->Max, sizeof(char*));
 	if (arr->String == NULL)
-		uprintf("Could not allocate string array\n");
+		uprintf("Could not allocate string array");
 }
 
 int32_t StrArrayAdd(StrArray* arr, const char* str, BOOL duplicate)
@@ -548,13 +558,13 @@ int32_t StrArrayAdd(StrArray* arr, const char* str, BOOL duplicate)
 		arr->String = (char**)realloc(arr->String, arr->Max*sizeof(char*));
 		if (arr->String == NULL) {
 			free(old_table);
-			uprintf("Could not reallocate string array\n");
+			uprintf("Could not reallocate string array");
 			return -1;
 		}
 	}
 	arr->String[arr->Index] = (duplicate)?safe_strdup(str):(char*)str;
 	if (arr->String[arr->Index] == NULL) {
-		uprintf("Could not store string in array\n");
+		uprintf("Could not store string in array");
 		return -1;
 	}
 	return arr->Index++;
@@ -577,7 +587,7 @@ void StrArrayClear(StrArray* arr)
 	uint32_t i;
 	if ((arr == NULL) || (arr->String == NULL))
 		return;
-	for (i=0; i<arr->Index; i++) {
+	for (i = 0; i < arr->Index; i++) {
 		safe_free(arr->String[i]);
 	}
 	arr->Index = 0;
@@ -601,13 +611,13 @@ static PSID GetSID(void) {
 	char* psid_string = NULL;
 
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
-		uprintf("OpenProcessToken failed: %s\n", WindowsErrorString());
+		uprintf("OpenProcessToken failed: %s", WindowsErrorString());
 		return NULL;
 	}
 
 	if (!GetTokenInformation(token, TokenUser, tu, 0, &len)) {
 		if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-			uprintf("GetTokenInformation (pre) failed: %s\n", WindowsErrorString());
+			uprintf("GetTokenInformation (pre) failed: %s", WindowsErrorString());
 			return NULL;
 		}
 		tu = (TOKEN_USER*)calloc(1, len);
@@ -623,11 +633,11 @@ static PSID GetSID(void) {
 		 * The workaround? Convert to string then back to PSID
 		 */
 		if (!ConvertSidToStringSidA(tu->User.Sid, &psid_string)) {
-			uprintf("Unable to convert SID to string: %s\n", WindowsErrorString());
+			uprintf("Unable to convert SID to string: %s", WindowsErrorString());
 			ret = NULL;
 		} else {
 			if (!ConvertStringSidToSidA(psid_string, &ret)) {
-				uprintf("Unable to convert string back to SID: %s\n", WindowsErrorString());
+				uprintf("Unable to convert string back to SID: %s", WindowsErrorString());
 				ret = NULL;
 			}
 			// MUST use LocalFree()
@@ -635,7 +645,7 @@ static PSID GetSID(void) {
 		}
 	} else {
 		ret = NULL;
-		uprintf("GetTokenInformation (real) failed: %s\n", WindowsErrorString());
+		uprintf("GetTokenInformation (real) failed: %s", WindowsErrorString());
 	}
 	free(tu);
 	return ret;
@@ -662,7 +672,7 @@ BOOL FileIO(enum file_io_type io_type, char* path, char** buffer, DWORD* size)
 		s_attr.lpSecurityDescriptor = &s_desc;
 		sa = &s_attr;
 	} else {
-		uprintf("Could not set security descriptor: %s\n", WindowsErrorString());
+		uprintf("Could not set security descriptor: %s", WindowsErrorString());
 	}
 
 	switch (io_type) {
@@ -696,7 +706,7 @@ BOOL FileIO(enum file_io_type io_type, char* path, char** buffer, DWORD* size)
 		*size = GetFileSize(handle, NULL);
 		*buffer = (char*)malloc(*size);
 		if (*buffer == NULL) {
-			uprintf("Could not allocate buffer for reading file\n");
+			uprintf("Could not allocate buffer for reading file");
 			goto out;
 		}
 		r = ReadFile(handle, *buffer, *size, size, NULL);
@@ -730,24 +740,24 @@ out:
 /*
  * Get a resource from the RC. If needed that resource can be duplicated.
  * If duplicate is true and len is non-zero, the a zeroed buffer of 'len'
- * size is allocated for the resource. Else the buffer is allocate for
+ * size is allocated for the resource. Else the buffer is allocated for
  * the resource size.
  */
-unsigned char* GetResource(HMODULE module, char* name, char* type, const char* desc, DWORD* len, BOOL duplicate)
+uint8_t* GetResource(HMODULE module, char* name, char* type, const char* desc, DWORD* len, BOOL duplicate)
 {
 	HGLOBAL res_handle;
 	HRSRC res;
 	DWORD res_len;
-	unsigned char* p = NULL;
+	uint8_t* p = NULL;
 
 	res = FindResourceA(module, name, type);
 	if (res == NULL) {
-		uprintf("Could not locate resource '%s': %s\n", desc, WindowsErrorString());
+		uprintf("Could not locate resource '%s': %s", desc, WindowsErrorString());
 		goto out;
 	}
 	res_handle = LoadResource(module, res);
 	if (res_handle == NULL) {
-		uprintf("Could not load resource '%s': %s\n", desc, WindowsErrorString());
+		uprintf("Could not load resource '%s': %s", desc, WindowsErrorString());
 		goto out;
 	}
 	res_len = SizeofResource(module, res);
@@ -755,16 +765,16 @@ unsigned char* GetResource(HMODULE module, char* name, char* type, const char* d
 	if (duplicate) {
 		if (*len == 0)
 			*len = res_len;
-		p = (unsigned char*)calloc(*len, 1);
+		p = calloc(*len, 1);
 		if (p == NULL) {
-			uprintf("Could not allocate resource '%s'\n", desc);
+			uprintf("Could not allocate resource '%s'", desc);
 			goto out;
 		}
 		memcpy(p, LockResource(res_handle), min(res_len, *len));
 		if (res_len > *len)
-			uprintf("WARNING: Resource '%s' was truncated by %d bytes!\n", desc, res_len - *len);
+			uprintf("WARNING: Resource '%s' was truncated by %d bytes!", desc, res_len - *len);
 	} else {
-		p = (unsigned char*)LockResource(res_handle);
+		p = LockResource(res_handle);
 	}
 	*len = res_len;
 
@@ -820,7 +830,7 @@ DWORD RunCommandWithProgress(const char* cmd, const char* dir, BOOL log, int msg
 			UpdateProgressWithInfoInit(NULL, FALSE);
 		while (1) {
 			// Check for user cancel
-			if (IS_ERROR(FormatStatus) && (SCODE_CODE(FormatStatus) == ERROR_CANCELLED)) {
+			if (IS_ERROR(ErrorStatus) && (SCODE_CODE(ErrorStatus) == ERROR_CANCELLED)) {
 				if (!TerminateProcess(pi.hProcess, ERROR_CANCELLED)) {
 					uprintf("Could not terminate command: %s", WindowsErrorString());
 				} else switch (WaitForSingleObject(pi.hProcess, 5000)) {
@@ -1189,7 +1199,8 @@ BOOL MountRegistryHive(const HKEY key, const char* pszHiveName, const char* pszH
 	LSTATUS status;
 	HANDLE token = INVALID_HANDLE_VALUE;
 
-	assert((key == HKEY_LOCAL_MACHINE) || (key == HKEY_USERS));
+	if_not_assert((key == HKEY_LOCAL_MACHINE) || (key == HKEY_USERS))
+		return FALSE;
 
 	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &token)) {
 		uprintf("Could not get current process token: %s", WindowsErrorString());
@@ -1220,7 +1231,8 @@ BOOL UnmountRegistryHive(const HKEY key, const char* pszHiveName)
 {
 	LSTATUS status;
 
-	assert((key == HKEY_LOCAL_MACHINE) || (key == HKEY_USERS));
+	if_not_assert((key == HKEY_LOCAL_MACHINE) || (key == HKEY_USERS))
+		return FALSE;
 
 	status = RegUnLoadKeyA(key, pszHiveName);
 	if (status != ERROR_SUCCESS) {
@@ -1231,4 +1243,74 @@ BOOL UnmountRegistryHive(const HKEY key, const char* pszHiveName)
 			(key == HKEY_LOCAL_MACHINE) ? "HKLM" : "HKCU", pszHiveName);
 
 	return (status == ERROR_SUCCESS);
+}
+
+/*
+ * Take administrative ownership of a file or directory, and grant all access rights.
+ */
+BOOL TakeOwnership(LPCSTR lpszOwnFile)
+{
+	BOOL ret = FALSE;
+	HANDLE hToken = NULL;
+	PSID pSIDAdmin = NULL;
+	PACL pOldDACL = NULL, pNewDACL = NULL;
+	PSECURITY_DESCRIPTOR pSD = NULL;
+	SID_IDENTIFIER_AUTHORITY SIDAuthNT = SECURITY_NT_AUTHORITY;
+	EXPLICIT_ACCESS ea = { 0 };
+
+	if (lpszOwnFile == NULL)
+		return FALSE;
+
+	// Create a SID for the BUILTIN\Administrators group.
+	if (!AllocateAndInitializeSid(&SIDAuthNT, 2, SECURITY_BUILTIN_DOMAIN_RID,
+		DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &pSIDAdmin))
+		goto out;
+
+	// Open a handle to the access token for the calling process.
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &hToken))
+		goto out;
+
+	// Enable the SE_TAKE_OWNERSHIP_NAME privilege.
+	if (!SetPrivilege(hToken, SE_TAKE_OWNERSHIP_NAME, TRUE))
+		goto out;
+
+	// Set the owner in the object's security descriptor.
+	if (SetNamedSecurityInfoU(lpszOwnFile, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+		pSIDAdmin, NULL, NULL, NULL) != ERROR_SUCCESS)
+		goto out;
+
+	// Disable the SE_TAKE_OWNERSHIP_NAME privilege.
+	if (!SetPrivilege(hToken, SE_TAKE_OWNERSHIP_NAME, FALSE))
+		goto out;
+
+	// Get a pointer to the existing DACL.
+	if (GetNamedSecurityInfoU(lpszOwnFile, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+		NULL, NULL, &pOldDACL, NULL, &pSD) != ERROR_SUCCESS)
+		goto out;
+
+	// Initialize an EXPLICIT_ACCESS structure for the new ACE
+	// with full control for Administrators.
+	ea.grfAccessPermissions = GENERIC_ALL;
+	ea.grfAccessMode = GRANT_ACCESS;
+	ea.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
+	ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+	ea.Trustee.TrusteeType = TRUSTEE_IS_GROUP;
+	ea.Trustee.ptstrName = (LPTSTR)pSIDAdmin;
+
+	// Create a new ACL that merges the new ACE into the existing DACL.
+	if (SetEntriesInAcl(1, &ea, pOldDACL, &pNewDACL) != ERROR_SUCCESS)
+		goto out;
+
+	// Try to modify the object's DACL.
+	if (SetNamedSecurityInfoU(lpszOwnFile, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+		NULL, NULL, pNewDACL, NULL) != ERROR_SUCCESS)
+		goto out;
+
+	ret = TRUE;
+
+out:
+	FreeSid(pSIDAdmin);
+	LocalFree(pNewDACL);
+	safe_closehandle(hToken);
+	return ret;
 }

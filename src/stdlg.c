@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard Dialog Routines (Browse for folder, About, etc)
- * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2025 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@
 
 /* Globals */
 extern BOOL is_x86_64, appstore_version;
-extern char unattend_username[MAX_USERNAME_LENGTH];
+extern char unattend_username[MAX_USERNAME_LENGTH], *sbat_level_txt;
 static HICON hMessageIcon = (HICON)INVALID_HANDLE_VALUE;
 static char* szMessageText = NULL;
 static char* szMessageTitle = NULL;
@@ -121,7 +121,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, UINT* selected_ext)
 	hr = CoCreateInstance(save ? &CLSID_FileSaveDialog : &CLSID_FileOpenDialog, NULL, CLSCTX_INPROC,
 		&IID_IFileDialog, (LPVOID)&pfd);
 	if (SUCCEEDED(hr) && (pfd == NULL))	// Never trust Microsoft APIs to do the right thing
-		hr = ERROR_SEVERITY_ERROR | FAC(FACILITY_WINDOWS) | ERROR_API_UNAVAILABLE;
+		hr = RUFUS_ERROR(ERROR_API_UNAVAILABLE);
 
 	if (FAILED(hr)) {
 		SetLastError(hr);
@@ -386,7 +386,7 @@ INT_PTR CALLBACK AboutCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lP
 		ResizeButtonHeight(hDlg, IDOK);
 		static_sprintf(about_blurb, about_blurb_format, lmprintf(MSG_174|MSG_RTF),
 			lmprintf(MSG_175|MSG_RTF, rufus_version[0], rufus_version[1], rufus_version[2]),
-			"Copyright © 2011-2023 Pete Batard",
+			"Copyright © 2011-2025 Pete Batard",
 			lmprintf(MSG_176|MSG_RTF), lmprintf(MSG_177|MSG_RTF), lmprintf(MSG_178|MSG_RTF));
 		for (i = 0; i < ARRAYSIZE(hEdit); i++) {
 			hEdit[i] = GetDlgItem(hDlg, edit_id[i]);
@@ -588,7 +588,8 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 			return (INT_PTR)TRUE;
 		case IDC_MORE_INFO:
 			if (notification_more_info != NULL) {
-				assert(notification_more_info->callback != NULL);
+				if_not_assert(notification_more_info->callback != NULL)
+					return (INT_PTR)FALSE;
 				if (notification_more_info->id == MORE_INFO_URL) {
 					ShellExecuteA(hDlg, "open", notification_more_info->url, NULL, NULL, SW_SHOWNORMAL);
 				} else {
@@ -1371,6 +1372,7 @@ static DWORD WINAPI CheckForFidoThread(LPVOID param)
 	static BOOL is_active = FALSE;
 	LONG_PTR style;
 	char* loc = NULL;
+	uint32_t i;
 	uint64_t len;
 	HWND hCtrl;
 
@@ -1381,6 +1383,19 @@ static DWORD WINAPI CheckForFidoThread(LPVOID param)
 		return -1;
 	is_active = TRUE;
 	safe_free(fido_url);
+	safe_free(sbat_entries);
+	safe_free(sbat_level_txt);
+
+	// Get the latest sbat_level.txt data while we're poking the network for Fido.
+	len = DownloadToFileOrBuffer(RUFUS_URL "/sbat_level.txt", NULL, (BYTE**)&sbat_level_txt, NULL, FALSE);
+	if (len != 0 && len < 512) {
+		sbat_entries = GetSbatEntries(sbat_level_txt);
+		if (sbat_entries != 0) {
+			for (i = 0; sbat_entries[i].product != NULL; i++);
+			if (i > 0)
+				uprintf("Found %d additional UEFI revocation filters from remote SBAT", i);
+		}
+	}
 
 	// Get the Fido URL from parsing a 'Fido.ver' on our server. This enables the use of different
 	// Fido versions from different versions of Rufus, if needed, as opposed to always downloading
@@ -1590,7 +1605,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 		case IDC_DOWNLOAD:	// Also doubles as abort and launch function
 			switch(download_status) {
 			case 1:		// Abort
-				FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_CANCELLED;
+				ErrorStatus = RUFUS_ERROR(ERROR_CANCELLED);
 				download_status = 0;
 				hThread = NULL;
 				break;
@@ -1653,7 +1668,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 	case UM_PROGRESS_INIT:
 		EnableWindow(GetDlgItem(hDlg, IDCANCEL), FALSE);
 		SetWindowTextU(GetDlgItem(hDlg, IDC_DOWNLOAD), lmprintf(MSG_038));
-		FormatStatus = 0;
+		ErrorStatus = 0;
 		download_status = 1;
 		return (INT_PTR)TRUE;
 	case UM_PROGRESS_EXIT:
@@ -1665,7 +1680,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 			SetWindowTextU(GetDlgItem(hDlg, IDC_DOWNLOAD), lmprintf(MSG_040));
 			// Disable the download button if we found an invalid signature
 			EnableWindow(GetDlgItem(hDlg, IDC_DOWNLOAD),
-				FormatStatus != (ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | APPERR(ERROR_BAD_SIGNATURE)));
+				ErrorStatus != RUFUS_ERROR(APPERR(ERROR_BAD_SIGNATURE)));
 			download_status = 0;
 		}
 		return (INT_PTR)TRUE;

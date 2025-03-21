@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * Standard Dialog Routines (Browse for folder, About, etc)
- * Copyright © 2011-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2011-2025 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,7 +46,8 @@
 
 /* Globals */
 extern BOOL is_x86_64, appstore_version;
-extern char unattend_username[MAX_USERNAME_LENGTH];
+extern char unattend_username[MAX_USERNAME_LENGTH], *sbat_level_txt;
+extern HICON hSmallIcon, hBigIcon;
 static HICON hMessageIcon = (HICON)INVALID_HANDLE_VALUE;
 static char* szMessageText = NULL;
 static char* szMessageTitle = NULL;
@@ -121,7 +122,7 @@ char* FileDialog(BOOL save, char* path, const ext_t* ext, UINT* selected_ext)
 	hr = CoCreateInstance(save ? &CLSID_FileSaveDialog : &CLSID_FileOpenDialog, NULL, CLSCTX_INPROC,
 		&IID_IFileDialog, (LPVOID)&pfd);
 	if (SUCCEEDED(hr) && (pfd == NULL))	// Never trust Microsoft APIs to do the right thing
-		hr = ERROR_SEVERITY_ERROR | FAC(FACILITY_WINDOWS) | ERROR_API_UNAVAILABLE;
+		hr = RUFUS_ERROR(ERROR_API_UNAVAILABLE);
 
 	if (FAILED(hr)) {
 		SetLastError(hr);
@@ -213,11 +214,10 @@ out:
 /*
  * Create the application status bar
  */
-void CreateStatusBar(void)
+void CreateStatusBar(HFONT* hFont)
 {
 	RECT rect;
 	int edge[2];
-	HFONT hFont;
 
 	// Create the status bar
 	hStatus = CreateWindowEx(0, STATUSCLASSNAME, NULL, WS_CHILD | WS_VISIBLE | SBARS_TOOLTIPS,
@@ -231,10 +231,14 @@ void CreateStatusBar(void)
 	SendMessage(hStatus, SB_SETPARTS, (WPARAM)ARRAYSIZE(edge), (LPARAM)&edge);
 
 	// Set the font
-	hFont = CreateFontA(-MulDiv(9, GetDeviceCaps(GetDC(hMainDialog), LOGPIXELSY), 72),
-		0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-		0, 0, PROOF_QUALITY, 0, "Segoe UI");
-	SendMessage(hStatus, WM_SETFONT, (WPARAM)hFont, TRUE);
+	if (*hFont == NULL) {
+		HDC hDC = GetDC(hMainDialog);
+		*hFont = CreateFontA(-MulDiv(9, GetDeviceCaps(hDC, LOGPIXELSY), 72),
+			0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+			0, 0, PROOF_QUALITY, 0, "Segoe UI");
+		safe_release_dc(hMainDialog, hDC);
+	}
+	SendMessage(hStatus, WM_SETFONT, (WPARAM)*hFont, TRUE);
 }
 
 /*
@@ -386,7 +390,7 @@ INT_PTR CALLBACK AboutCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lP
 		ResizeButtonHeight(hDlg, IDOK);
 		static_sprintf(about_blurb, about_blurb_format, lmprintf(MSG_174|MSG_RTF),
 			lmprintf(MSG_175|MSG_RTF, rufus_version[0], rufus_version[1], rufus_version[2]),
-			"Copyright © 2011-2023 Pete Batard",
+			"Copyright © 2011-2025 Pete Batard",
 			lmprintf(MSG_176|MSG_RTF), lmprintf(MSG_177|MSG_RTF), lmprintf(MSG_178|MSG_RTF));
 		for (i = 0; i < ARRAYSIZE(hEdit); i++) {
 			hEdit[i] = GetDlgItem(hDlg, edit_id[i]);
@@ -468,7 +472,7 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 	static HBRUSH background_brush, separator_brush, buttonface_brush;
 	// To use the system message font
 	NONCLIENTMETRICS ncm;
-	HFONT hDlgFont;
+	static HFONT hDlgFont = NULL;
 	HWND hCtrl;
 	RECT rc;
 	HDC hDC;
@@ -482,8 +486,10 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 #if defined(_MSC_VER) && (_MSC_VER >= 1500) && (_WIN32_WINNT >= _WIN32_WINNT_VISTA)
 		ncm.cbSize -= sizeof(ncm.iPaddedBorderWidth);
 #endif
-		SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
-		hDlgFont = CreateFontIndirect(&(ncm.lfMessageFont));
+		if (hDlgFont == NULL) {
+			SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
+			hDlgFont = CreateFontIndirect(&(ncm.lfMessageFont));
+		}
 		// Set the dialog to use the system message box font
 		SendMessage(hDlg, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
 		SendMessage(GetDlgItem(hDlg, IDC_NOTIFICATION_TEXT), WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
@@ -497,9 +503,9 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 		}
 
 		apply_localization(IDD_NOTIFICATION, hDlg);
-		background_brush = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
-		separator_brush = CreateSolidBrush(GetSysColor(COLOR_3DLIGHT));
-		buttonface_brush = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+		background_brush = GetSysColorBrush(COLOR_WINDOW);
+		separator_brush = GetSysColorBrush(COLOR_3DLIGHT);
+		buttonface_brush = GetSysColorBrush(COLOR_BTNFACE);
 		SetTitleBarIcon(hDlg);
 		CenterDialog(hDlg, NULL);
 		// Change the default icon
@@ -575,6 +581,9 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 			}
 		}
 		return (INT_PTR)FALSE;
+	case WM_NCDESTROY:
+		safe_delete_object(hDlgFont);
+		break;
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDOK:
@@ -588,7 +597,8 @@ INT_PTR CALLBACK NotificationCallback(HWND hDlg, UINT message, WPARAM wParam, LP
 			return (INT_PTR)TRUE;
 		case IDC_MORE_INFO:
 			if (notification_more_info != NULL) {
-				assert(notification_more_info->callback != NULL);
+				if_not_assert(notification_more_info->callback != NULL)
+					return (INT_PTR)FALSE;
 				if (notification_more_info->id == MORE_INFO_URL) {
 					ShellExecuteA(hDlg, "open", notification_more_info->url, NULL, NULL, SW_SHOWNORMAL);
 				} else {
@@ -674,7 +684,7 @@ static INT_PTR CALLBACK CustomSelectionCallback(HWND hDlg, UINT message, WPARAM 
 	// To use the system message font
 	NONCLIENTMETRICS ncm;
 	RECT rc, rc2;
-	HFONT hDlgFont;
+	static HFONT hDlgFont = NULL;
 	HWND hCtrl;
 	HDC hDC;
 
@@ -690,9 +700,11 @@ static INT_PTR CALLBACK CustomSelectionCallback(HWND hDlg, UINT message, WPARAM 
 		for (i = 0; i < nDialogItems; i++)
 			Button_SetStyle(GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + i), selection_dialog_style, TRUE);
 		// Get the system message box font. See http://stackoverflow.com/a/6057761
-		ncm.cbSize = sizeof(ncm);
-		SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
-		hDlgFont = CreateFontIndirect(&ncm.lfMessageFont);
+		if (hDlgFont == NULL) {
+			ncm.cbSize = sizeof(ncm);
+			SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
+			hDlgFont = CreateFontIndirect(&ncm.lfMessageFont);
+		}
 		// Set the dialog to use the system message box font
 		SendMessage(hDlg, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
 		SendMessage(GetDlgItem(hDlg, IDC_SELECTION_TEXT), WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
@@ -702,8 +714,8 @@ static INT_PTR CALLBACK CustomSelectionCallback(HWND hDlg, UINT message, WPARAM 
 		SendMessage(GetDlgItem(hDlg, IDNO), WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
 
 		apply_localization(IDD_SELECTION, hDlg);
-		background_brush = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
-		separator_brush = CreateSolidBrush(GetSysColor(COLOR_3DLIGHT));
+		background_brush = GetSysColorBrush(COLOR_WINDOW);
+		separator_brush = GetSysColorBrush(COLOR_3DLIGHT);
 		SetTitleBarIcon(hDlg);
 		CenterDialog(hDlg, NULL);
 
@@ -719,7 +731,7 @@ static INT_PTR CALLBACK CustomSelectionCallback(HWND hDlg, UINT message, WPARAM 
 		SetWindowTextU(GetDlgItem(hDlg, IDCANCEL), lmprintf(MSG_007));
 		SetWindowTextU(GetDlgItem(hDlg, IDC_SELECTION_TEXT), szMessageText);
 		for (i = 0; i < nDialogItems; i++) {
-			char *str = szDialogItem[i];
+			char* str = szDialogItem[i];
 			SetWindowTextU(GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + i), str);
 			ShowWindow(GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + i), SW_SHOW);
 			// Compute the maximum line's width (with some extra for the username field if needed)
@@ -732,7 +744,7 @@ static INT_PTR CALLBACK CustomSelectionCallback(HWND hDlg, UINT message, WPARAM 
 				free(str);
 		}
 		// If our maximum line's width is greater than the default, set a nonzero delta width
-		dw = (mw <= dw) ? 0: mw - dw;
+		dw = (mw <= dw) ? 0 : mw - dw;
 		// Move/Resize the controls as needed to fit our text
 		hCtrl = GetDlgItem(hDlg, IDC_SELECTION_TEXT);
 		ResizeMoveCtrl(hDlg, hCtrl, 0, 0, dw, 0, 1.0f);
@@ -801,6 +813,9 @@ static INT_PTR CALLBACK CustomSelectionCallback(HWND hDlg, UINT message, WPARAM 
 			}
 		}
 		return (INT_PTR)FALSE;
+	case WM_NCDESTROY:
+		safe_delete_object(hDlgFont);
+		break;
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDOK:
@@ -862,7 +877,7 @@ INT_PTR CALLBACK ListCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 	// To use the system message font
 	NONCLIENTMETRICS ncm;
 	RECT rc, rc2;
-	HFONT hDlgFont;
+	static HFONT hDlgFont = NULL;
 	HWND hCtrl;
 	HDC hDC;
 
@@ -875,9 +890,11 @@ INT_PTR CALLBACK ListCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 			nDialogItems = IDC_LIST_ITEMMAX - IDC_LIST_ITEM1;
 		}
 		// Get the system message box font. See http://stackoverflow.com/a/6057761
-		ncm.cbSize = sizeof(ncm);
-		SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
-		hDlgFont = CreateFontIndirect(&(ncm.lfMessageFont));
+		if (hDlgFont == NULL) {
+			ncm.cbSize = sizeof(ncm);
+			SystemParametersInfo(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
+			hDlgFont = CreateFontIndirect(&(ncm.lfMessageFont));
+		}
 		// Set the dialog to use the system message box font
 		SendMessage(hDlg, WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
 		SendMessage(GetDlgItem(hDlg, IDC_LIST_TEXT), WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
@@ -887,8 +904,8 @@ INT_PTR CALLBACK ListCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 		SendMessage(GetDlgItem(hDlg, IDNO), WM_SETFONT, (WPARAM)hDlgFont, MAKELPARAM(TRUE, 0));
 
 		apply_localization(IDD_LIST, hDlg);
-		background_brush = CreateSolidBrush(GetSysColor(COLOR_WINDOW));
-		separator_brush = CreateSolidBrush(GetSysColor(COLOR_3DLIGHT));
+		background_brush = GetSysColorBrush(COLOR_WINDOW);
+		separator_brush = GetSysColorBrush(COLOR_3DLIGHT);
 		SetTitleBarIcon(hDlg);
 		CenterDialog(hDlg, NULL);
 		// Change the default icon and set the text
@@ -941,6 +958,9 @@ INT_PTR CALLBACK ListCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 			}
 		}
 		return (INT_PTR)FALSE;
+	case WM_NCDESTROY:
+		safe_delete_object(hDlgFont);
+		break;
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDOK:
@@ -1371,6 +1391,7 @@ static DWORD WINAPI CheckForFidoThread(LPVOID param)
 	static BOOL is_active = FALSE;
 	LONG_PTR style;
 	char* loc = NULL;
+	uint32_t i;
 	uint64_t len;
 	HWND hCtrl;
 
@@ -1381,6 +1402,19 @@ static DWORD WINAPI CheckForFidoThread(LPVOID param)
 		return -1;
 	is_active = TRUE;
 	safe_free(fido_url);
+	safe_free(sbat_entries);
+	safe_free(sbat_level_txt);
+
+	// Get the latest sbat_level.txt data while we're poking the network for Fido.
+	len = DownloadToFileOrBuffer(RUFUS_URL "/sbat_level.txt", NULL, (BYTE**)&sbat_level_txt, NULL, FALSE);
+	if (len != 0 && len < 512) {
+		sbat_entries = GetSbatEntries(sbat_level_txt);
+		if (sbat_entries != 0) {
+			for (i = 0; sbat_entries[i].product != NULL; i++);
+			if (i > 0)
+				uprintf("Found %d additional UEFI revocation filters from remote SBAT", i);
+		}
+	}
 
 	// Get the Fido URL from parsing a 'Fido.ver' on our server. This enables the use of different
 	// Fido versions from different versions of Rufus, if needed, as opposed to always downloading
@@ -1573,7 +1607,10 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 		CreateStaticFont((HDC)wParam, &hyperlink_font, TRUE);
 		SelectObject((HDC)wParam, hyperlink_font);
 		SetTextColor((HDC)wParam, RGB(0,0,125));	// DARK_BLUE
-		return (INT_PTR)CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+		return (INT_PTR)GetSysColorBrush(COLOR_BTNFACE);
+	case WM_NCDESTROY:
+		safe_delete_object(hyperlink_font);
+		break;
 	case WM_COMMAND:
 		switch (LOWORD(wParam)) {
 		case IDCLOSE:
@@ -1590,7 +1627,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 		case IDC_DOWNLOAD:	// Also doubles as abort and launch function
 			switch(download_status) {
 			case 1:		// Abort
-				FormatStatus = ERROR_SEVERITY_ERROR|FAC(FACILITY_STORAGE)|ERROR_CANCELLED;
+				ErrorStatus = RUFUS_ERROR(ERROR_CANCELLED);
 				download_status = 0;
 				hThread = NULL;
 				break;
@@ -1653,7 +1690,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 	case UM_PROGRESS_INIT:
 		EnableWindow(GetDlgItem(hDlg, IDCANCEL), FALSE);
 		SetWindowTextU(GetDlgItem(hDlg, IDC_DOWNLOAD), lmprintf(MSG_038));
-		FormatStatus = 0;
+		ErrorStatus = 0;
 		download_status = 1;
 		return (INT_PTR)TRUE;
 	case UM_PROGRESS_EXIT:
@@ -1665,7 +1702,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 			SetWindowTextU(GetDlgItem(hDlg, IDC_DOWNLOAD), lmprintf(MSG_040));
 			// Disable the download button if we found an invalid signature
 			EnableWindow(GetDlgItem(hDlg, IDC_DOWNLOAD),
-				FormatStatus != (ERROR_SEVERITY_ERROR | FAC(FACILITY_STORAGE) | APPERR(ERROR_BAD_SIGNATURE)));
+				ErrorStatus != RUFUS_ERROR(APPERR(ERROR_BAD_SIGNATURE)));
 			download_status = 0;
 		}
 		return (INT_PTR)TRUE;
@@ -1680,36 +1717,39 @@ void DownloadNewVersion(void)
 
 void SetTitleBarIcon(HWND hDlg)
 {
-	int i16, s16, s32;
-	HICON hSmallIcon, hBigIcon;
+	int i16, s16 = 0, s32 = 0;
 
-	// High DPI scaling
-	i16 = GetSystemMetrics(SM_CXSMICON);
-	// Adjust icon size lookup
-	s16 = i16;
-	s32 = (int)(32.0f*fScale);
-	if (s16 >= 54)
-		s16 = 64;
-	else if (s16 >= 40)
-		s16 = 48;
-	else if (s16 >= 28)
-		s16 = 32;
-	else if (s16 >= 20)
-		s16 = 24;
-	if (s32 >= 54)
-		s32 = 64;
-	else if (s32 >= 40)
-		s32 = 48;
-	else if (s32 >= 28)
-		s32 = 32;
-	else if (s32 >= 20)
-		s32 = 24;
+	if (hSmallIcon == NULL || hBigIcon == NULL) {
+		// High DPI scaling
+		i16 = GetSystemMetrics(SM_CXSMICON);
+		// Adjust icon size lookup
+		s16 = i16;
+		s32 = (int)(32.0f * fScale);
+		if (s16 >= 54)
+			s16 = 64;
+		else if (s16 >= 40)
+			s16 = 48;
+		else if (s16 >= 28)
+			s16 = 32;
+		else if (s16 >= 20)
+			s16 = 24;
+		if (s32 >= 54)
+			s32 = 64;
+		else if (s32 >= 40)
+			s32 = 48;
+		else if (s32 >= 28)
+			s32 = 32;
+		else if (s32 >= 20)
+			s32 = 24;
+	}
 
 	// Create the title bar icon
-	hSmallIcon = (HICON)LoadImage(hMainInstance, MAKEINTRESOURCE(IDI_ICON), IMAGE_ICON, s16, s16, 0);
-	SendMessage (hDlg, WM_SETICON, ICON_SMALL, (LPARAM)hSmallIcon);
-	hBigIcon = (HICON)LoadImage(hMainInstance, MAKEINTRESOURCE(IDI_ICON), IMAGE_ICON, s32, s32, 0);
-	SendMessage (hDlg, WM_SETICON, ICON_BIG, (LPARAM)hBigIcon);
+	if (hSmallIcon == NULL)
+		hSmallIcon = (HICON)LoadImage(hMainInstance, MAKEINTRESOURCE(IDI_ICON), IMAGE_ICON, s16, s16, 0);
+	SendMessage(hDlg, WM_SETICON, ICON_SMALL, (LPARAM)hSmallIcon);
+	if (hBigIcon == NULL)
+		hBigIcon = (HICON)LoadImage(hMainInstance, MAKEINTRESOURCE(IDI_ICON), IMAGE_ICON, s32, s32, 0);
+	SendMessage(hDlg, WM_SETICON, ICON_BIG, (LPARAM)hBigIcon);
 }
 
 // Return the onscreen size of the text displayed by a control

@@ -1,7 +1,7 @@
 /*
  * Rufus: The Reliable USB Formatting Utility
  * UI-related function calls
- * Copyright © 2018-2023 Pete Batard <pete@akeo.ie>
+ * Copyright © 2018-2024 Pete Batard <pete@akeo.ie>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@ UINT_PTR UM_LANGUAGE_MENU_MAX = UM_LANGUAGE_MENU;
 HIMAGELIST hUpImageList, hDownImageList;
 extern BOOL use_vds, appstore_version;
 extern int imop_win_sel;
-extern char* unattend_xml_path;
+extern char *unattend_xml_path, *archive_path;
 int update_progress_type = UPT_PERCENT;
 int advanced_device_section_height, advanced_format_section_height;
 // (empty) check box width, (empty) drop down width, button height (for and without dropdown match)
@@ -223,9 +223,8 @@ void GetHalfDropwdownWidth(HWND hDlg)
 		hw = max(hw, GetTextSize(GetDlgItem(hDlg, IDC_TARGET_SYSTEM), msg).cx);
 	}
 
-	// Finally, we must ensure that we'll have enough space for the 2 checkbox controls
+	// Finally, we must ensure that we'll have enough space for the checkbox controls
 	// that end up with a half dropdown
-	hw = max(hw, GetTextWidth(hDlg, IDC_RUFUS_MBR) - sw);
 	hw = max(hw, GetTextWidth(hDlg, IDC_BAD_BLOCKS) - sw);
 
 	// Add the width of a blank dropdown
@@ -351,7 +350,7 @@ void PositionMainControls(HWND hDlg)
 	GetWindowRect(hCtrl, &rc);
 	MapWindowPoints(NULL, hDlg, (POINT*)&rc, 2);
 	advanced_device_section_height = rc.top;
-	hCtrl = GetDlgItem(hDlg, IDC_RUFUS_MBR);
+	hCtrl = GetDlgItem(hDlg, IDC_UEFI_MEDIA_VALIDATION);
 	GetWindowRect(hCtrl, &rc);
 	MapWindowPoints(NULL, hDlg, (POINT*)&rc, 2);
 	advanced_device_section_height = rc.bottom - advanced_device_section_height;
@@ -474,10 +473,10 @@ void PositionMainControls(HWND hDlg)
 		hCtrl = GetDlgItem(hDlg, half_width_ids[i]);
 		GetWindowRect(hCtrl, &rc);
 		MapWindowPoints(NULL, hDlg, (POINT*)&rc, 2);
-		// First 5 controls are on the left handside
+		// First 4 controls are on the left handside
 		// First 2 controls may overflow into separator
 		hPrevCtrl = GetNextWindow(hCtrl, GW_HWNDPREV);
-		SetWindowPos(hCtrl, hPrevCtrl, (i < 5) ? rc.left : mw + hw + sw, rc.top,
+		SetWindowPos(hCtrl, hPrevCtrl, (i < 4) ? rc.left : mw + hw + sw, rc.top,
 			(i <2) ? hw + sw : hw, rc.bottom - rc.top, 0);
 	}
 
@@ -556,27 +555,31 @@ void AdjustForLowDPI(HWND hDlg)
 	InvalidateRect(hDlg, NULL, TRUE);
 }
 
-void SetSectionHeaders(HWND hDlg)
+void SetSectionHeaders(HWND hDlg, HFONT* hFont)
 {
 	RECT rc;
 	HWND hCtrl;
 	SIZE sz;
-	HFONT hf;
 	wchar_t wtmp[128];
 	size_t wlen;
 	int i;
 
 	// Set the section header fonts and resize the static controls accordingly
-	hf = CreateFontA(-MulDiv(14, GetDeviceCaps(GetDC(hMainDialog), LOGPIXELSY), 72), 0, 0, 0,
-		FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, PROOF_QUALITY, 0, "Segoe UI");
+	if (*hFont == NULL) {
+		HDC hDC = GetDC(hMainDialog);
+		*hFont = CreateFontA(-MulDiv(14, GetDeviceCaps(hDC, LOGPIXELSY), 72), 0, 0, 0,
+			FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 0, 0, PROOF_QUALITY, 0, "Segoe UI");
+		safe_release_dc(hMainDialog, hDC);
+	}
 
 	for (i = 0; i < ARRAYSIZE(section_control_ids); i++) {
-		SendDlgItemMessageA(hDlg, section_control_ids[i], WM_SETFONT, (WPARAM)hf, TRUE);
+		SendDlgItemMessageA(hDlg, section_control_ids[i], WM_SETFONT, (WPARAM)*hFont, TRUE);
 		hCtrl = GetDlgItem(hDlg, section_control_ids[i]);
 		memset(wtmp, 0, sizeof(wtmp));
 		GetWindowTextW(hCtrl, wtmp, ARRAYSIZE(wtmp) - 4);
 		wlen = wcslen(wtmp);
-		assert(wlen < ARRAYSIZE(wtmp) - 2);
+		if_not_assert(wlen < ARRAYSIZE(wtmp) - 2)
+			break;
 		wtmp[wlen++] = L' ';
 		wtmp[wlen++] = L' ';
 		SetWindowTextW(hCtrl, wtmp);
@@ -887,6 +890,9 @@ void CreateSmallButtons(HWND hDlg)
 static INT_PTR CALLBACK ProgressCallback(HWND hCtrl, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	HDC hDC;
+	HPEN hOldPen;
+	HFONT hOldFont;
+	HBRUSH hOldBrush;
 	RECT rc, rc2;
 	PAINTSTRUCT ps;
 	SIZE size;
@@ -957,11 +963,11 @@ static INT_PTR CALLBACK ProgressCallback(HWND hCtrl, UINT message, WPARAM wParam
 		GetClientRect(hCtrl, &rc);
 		rc2 = rc;
 		InflateRect(&rc, -1, -1);
-		SelectObject(hDC, GetStockObject(DC_PEN));
-		SelectObject(hDC, GetStockObject(NULL_BRUSH));
+		hOldPen = (HPEN)SelectObject(hDC, GetStockObject(DC_PEN));
+		hOldBrush = (HBRUSH)SelectObject(hDC, GetStockObject(NULL_BRUSH));
 		// TODO: Handle SetText message so we can avoid this call
 		GetWindowTextW(hProgress, winfo, ARRAYSIZE(winfo));
-		SelectObject(hDC, hInfoFont);
+		hOldFont = (hInfoFont != NULL) ? (HFONT)SelectObject(hDC, hInfoFont) : NULL;
 		GetTextExtentPoint32(hDC, winfo, (int)wcslen(winfo), &size);
 		if (size.cx > rc.right)
 			size.cx = rc.right;
@@ -1013,6 +1019,10 @@ static INT_PTR CALLBACK ProgressCallback(HWND hCtrl, UINT message, WPARAM wParam
 		// Bounding rectangle
 		SetDCPenColor(hDC, PROGRESS_BAR_BOX_COLOR);
 		Rectangle(hDC, rc2.left, rc2.top, rc2.right, rc2.bottom);
+		if (hOldFont != NULL)
+			SelectObject(hDC, hOldFont);
+		SelectObject(hDC, hOldPen);
+		SelectObject(hDC, hOldBrush);
 		EndPaint(hCtrl, &ps);
 		return (INT_PTR)TRUE;
 	}
@@ -1204,6 +1214,9 @@ void InitProgress(BOOL bOnlyFormat)
 			}
 			nb_slots[OP_FINALIZE] = ((selection_default == BT_IMAGE) && (fs_type == FS_NTFS)) ? 3 : 2;
 		}
+	}
+	if (archive_path != NULL) {
+		nb_slots[OP_EXTRACT_ZIP] = -1;
 	}
 
 	for (i = 0; i < OP_MAX; i++) {
@@ -1583,10 +1596,13 @@ void SetBootTypeDropdownWidth(void)
 void OnPaint(HDC hdc)
 {
 	int i;
-	HPEN hp = CreatePen(0, (fScale < 1.5f) ? 2 : 3, RGB(0, 0, 0));
-	SelectObject(hdc, hp);
+	COLORREF cp = GetSysColor(COLOR_WINDOWTEXT);
+	HPEN hp = CreatePen(0, (fScale < 1.5f) ? 2 : 3, cp);
+	HPEN hop = (HPEN)SelectObject(hdc, hp);
 	for (i = 0; i < ARRAYSIZE(section_vpos); i++) {
 		MoveToEx(hdc, mw + 10, section_vpos[i], NULL);
 		LineTo(hdc, mw + fw, section_vpos[i]);
 	}
+	SelectObject(hdc, hop);
+	DeleteObject(hp);
 }
